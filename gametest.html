@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>thing</title>
+  <style>
+    canvas {
+      display: block;
+      background: black;
+    }
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="1280" height="720"></canvas>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const WIDTH = canvas.width;
+const HEIGHT = canvas.height;
+
+const TILE_SIZE = 64;
+const MAP = [
+  [1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,0,0,0,1,1],
+  [1,0,0,1,0,0,0,0,1],
+  [1,0,0,1,0,0,0,0,1],
+  [1,0,0,0,0,1,0,0,1],
+  [1,0,0,0,0,0,0,1,1],
+  [1,1,1,1,1,1,1,1,1],
+];
+const MAP_W = MAP[0].length;
+const MAP_H = MAP.length;
+
+let playerX = 100;
+let playerY = 100;
+let playerAngle = 0;
+
+const FOV = Math.PI / 3;
+const NUM_RAYS = 120;
+const MAX_DEPTH = 800;
+const DELTA_ANGLE = FOV / NUM_RAYS;
+const DIST = (WIDTH/2) / Math.tan(FOV/2);
+const PROJ_COEFF = DIST * TILE_SIZE;
+const SCALE = Math.floor(WIDTH / NUM_RAYS);
+
+let keys = {};
+let mouseLocked = true;
+let showCrosshair = false;
+
+// Movement
+document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+// Mouse look
+canvas.addEventListener('click', () => {
+  canvas.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+  mouseLocked = (document.pointerLockElement === canvas);
+});
+
+document.addEventListener('mousemove', e => {
+  if (mouseLocked) playerAngle += e.movementX * 0.003;
+});
+
+document.addEventListener('mousedown', e => {
+  if (e.button === 2) showCrosshair = true;
+});
+document.addEventListener('mouseup', e => {
+  if (e.button === 2) showCrosshair = false;
+});
+
+function isWall(x, y) {
+  const gx = Math.floor(x / TILE_SIZE);
+  const gy = Math.floor(y / TILE_SIZE);
+  if (gx >= 0 && gx < MAP_W && gy >= 0 && gy < MAP_H) {
+    return MAP[gy][gx] === 1;
+  }
+  return true;
+}
+
+function castRays() {
+  let startAngle = playerAngle - FOV / 2;
+
+  for (let ray = 0; ray < NUM_RAYS; ray++) {
+    const angle = startAngle + ray * DELTA_ANGLE;
+    const sinA = Math.sin(angle);
+    const cosA = Math.cos(angle);
+
+    for (let depth = 1; depth < MAX_DEPTH; depth++) {
+      const tx = playerX + depth * cosA;
+      const ty = playerY + depth * sinA;
+      const ix = Math.floor(tx / TILE_SIZE);
+      const iy = Math.floor(ty / TILE_SIZE);
+
+      if (ix >= 0 && ix < MAP_W && iy >= 0 && iy < MAP_H && MAP[iy][ix]) {
+        const correctedDepth = depth * Math.cos(playerAngle - angle);
+        const h = PROJ_COEFF / (correctedDepth + 0.0001);
+        const c = 255 / (1 + correctedDepth * correctedDepth * 0.0001);
+        ctx.fillStyle = `rgb(${c},${c},${c})`;
+        ctx.fillRect(ray * SCALE, HEIGHT/2 - h/2, SCALE, h);
+        break;
+      }
+    }
+  }
+}
+
+function movePlayer(dt) {
+  const speed = 150 * dt;
+  const dx = Math.cos(playerAngle) * speed;
+  const dy = Math.sin(playerAngle) * speed;
+
+  // Forward/back
+  if (keys['w']) {
+    const newX = playerX + dx;
+    const newY = playerY + dy;
+    if (!isWall(newX, playerY)) playerX = newX;
+    if (!isWall(playerX, newY)) playerY = newY;
+  }
+  if (keys['s']) {
+    const newX = playerX - dx;
+    const newY = playerY - dy;
+    if (!isWall(newX, playerY)) playerX = newX;
+    if (!isWall(playerX, newY)) playerY = newY;
+  }
+
+  // Strafe
+  const strafeDx = Math.sin(playerAngle) * speed;
+  const strafeDy = -Math.cos(playerAngle) * speed;
+  if (keys['d']) {
+    const newX = playerX - strafeDx;
+    const newY = playerY - strafeDy;
+    if (!isWall(newX, playerY)) playerX = newX;
+    if (!isWall(playerX, newY)) playerY = newY;
+  }
+  if (keys['a']) {
+    const newX = playerX + strafeDx;
+    const newY = playerY + strafeDy;
+    if (!isWall(newX, playerY)) playerX = newX;
+    if (!isWall(playerX, newY)) playerY = newY;
+  }
+}
+
+function drawMinimap() {
+  const scale = 0.2;
+  const mmW = MAP_W * TILE_SIZE * scale;
+  const mmH = MAP_H * TILE_SIZE * scale;
+
+  ctx.save();
+  ctx.translate(10, 10);
+  ctx.scale(scale, scale);
+
+  // Map
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      if (MAP[y][x] === 1) {
+        ctx.fillStyle = "#666";
+        ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+      }
+    }
+  }
+
+  // Player
+  ctx.fillStyle = "red";
+  ctx.beginPath();
+  ctx.arc(playerX, playerY, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Facing line
+  const dx = Math.cos(playerAngle) * 40;
+  const dy = Math.sin(playerAngle) * 40;
+  ctx.strokeStyle = "red";
+  ctx.beginPath();
+  ctx.moveTo(playerX, playerY);
+  ctx.lineTo(playerX + dx, playerY + dy);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawCrosshair() {
+  const centerX = WIDTH / 2;
+  const centerY = HEIGHT / 2;
+  const size = 6;
+  ctx.strokeStyle = "white";
+  ctx.beginPath();
+  ctx.moveTo(centerX - size, centerY);
+  ctx.lineTo(centerX + size, centerY);
+  ctx.moveTo(centerX, centerY - size);
+  ctx.lineTo(centerX, centerY + size);
+  ctx.stroke();
+}
+
+let lastTime = performance.now();
+
+function gameLoop(now) {
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+
+  movePlayer(dt);
+
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  castRays();
+  drawMinimap();
+  if (showCrosshair) drawCrosshair();
+
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
