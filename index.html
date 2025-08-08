@@ -1,221 +1,679 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>thing</title>
-  <style>
-    canvas {
-      display: block;
-      background: black;
-    }
-    body {
-      margin: 0;
-      overflow: hidden;
-    }
-  </style>
+<meta charset="utf-8" />
+<title>raycasting demo</title>
+<style>
+  html,body { height:100%; margin:0; background:#000; overflow:hidden; }
+  canvas { display:block; background:#000; margin:0 auto; }
+  #hint {
+    position: absolute; left:10px; top:10px; color:#fff; font-family:monospace; background: rgba(0,0,0,0.5); padding:6px; border-radius:4px;
+  }
+</style>
 </head>
 <body>
-<canvas id="gameCanvas" width="1280" height="720"></canvas>
+<canvas id="screen"></canvas>
 <script>
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+(() => {
+  const WIDTH = 1024, HEIGHT = 768;
+  const canvas = document.getElementById('screen');
+  canvas.width = WIDTH; canvas.height = HEIGHT;
+  const ctx = canvas.getContext('2d');
 
-const WIDTH = canvas.width;
-const HEIGHT = canvas.height;
+  const TILE_SIZE = 64;
+  const MAP = [
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  ];
+  const MAP_W = MAP[0].length, MAP_H = MAP.length;
 
-const TILE_SIZE = 64;
-const MAP = [
-  [1,1,1,1,1,1,1,1,1],
-  [1,0,0,0,0,0,0,1,1],
-  [1,0,0,1,0,0,0,0,1],
-  [1,0,0,1,0,0,0,0,1],
-  [1,0,0,0,0,1,0,0,1],
-  [1,0,0,0,0,0,0,1,1],
-  [1,1,1,1,1,1,1,1,1],
-];
-const MAP_W = MAP[0].length;
-const MAP_H = MAP.length;
+  // Raycast constants
+  const FOV = Math.PI / 3;
+  const NUM_RAYS = 120;
+  const MAX_DEPTH = 800;
+  const DELTA_ANGLE = FOV / NUM_RAYS;
+  const DIST = (WIDTH/2) / Math.tan(FOV/2);
+  const PROJ_COEFF = DIST * TILE_SIZE;
+  const SCALE = Math.floor(WIDTH / NUM_RAYS);
 
-let playerX = 100;
-let playerY = 100;
-let playerAngle = 0;
+  // Player state
+  let playerX = 100, playerY = 100;
+  let playerAngle = 0;
+  let playerHP = 100;
+  let player_fire_rate = 0.3; // seconds
+  let player_shoot_cooldown = 0;
 
-const FOV = Math.PI / 3;
-const NUM_RAYS = 120;
-const MAX_DEPTH = 800;
-const DELTA_ANGLE = FOV / NUM_RAYS;
-const DIST = (WIDTH/2) / Math.tan(FOV/2);
-const PROJ_COEFF = DIST * TILE_SIZE;
-const SCALE = Math.floor(WIDTH / NUM_RAYS);
+  // Input state
+  const keys = {};
+  let mouseLocked = false;
+  let show_crosshair = false;
+  let right_mouse_held = false;
+  let left_mouse_held = false;
+  let player_shooting = false;
 
-let keys = {};
-let mouseLocked = true;
-let showCrosshair = false;
+  // Projectiles & enemies
+  let projectiles = []; // enemy projectiles
+  let player_projectiles = [];
+  const enemy_hits = {}; // hits per enemy index
 
-// Movement
-document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+  let minimap_fullscreen = false;
 
-// Mouse look
-canvas.addEventListener('click', () => {
-  canvas.requestPointerLock();
-});
+  // Enemies
+  const enemy_list = [
+    { x:300, y:400, cooldown:0, alive:true, state:'patrolling', patrol_index:0, patrol_points:[ [300,400],[500,400],[500,300],[300,300] ], path:[] },
+    { x:100, y:100, cooldown:0, alive:true, state:'patrolling', patrol_index:0, patrol_points:[ [100,100],[700,300],[600,400],[500,300] ], path:[] },
+    { x:150, y:150, cooldown:0, alive:true, state:'patrolling', patrol_index:0, patrol_points:[ [150,150],[200,200],[150,250],[100,200] ], path:[] },
+  ];
 
-document.addEventListener('pointerlockchange', () => {
-  mouseLocked = (document.pointerLockElement === canvas);
-});
-
-document.addEventListener('mousemove', e => {
-  if (mouseLocked) playerAngle += e.movementX * 0.003;
-});
-
-document.addEventListener('mousedown', e => {
-  if (e.button === 2) showCrosshair = true;
-});
-document.addEventListener('mouseup', e => {
-  if (e.button === 2) showCrosshair = false;
-});
-
-function isWall(x, y) {
-  const gx = Math.floor(x / TILE_SIZE);
-  const gy = Math.floor(y / TILE_SIZE);
-  if (gx >= 0 && gx < MAP_W && gy >= 0 && gy < MAP_H) {
+  // Utility functions
+  function isWall(x,y){
+    const gx = Math.floor(x / TILE_SIZE);
+    const gy = Math.floor(y / TILE_SIZE);
+    if(gx < 0 || gy < 0 || gx >= MAP_W || gy >= MAP_H) return true;
     return MAP[gy][gx] === 1;
   }
-  return true;
-}
 
-function castRays() {
-  let startAngle = playerAngle - FOV / 2;
+  function wrapAngle(a){
+    while(a > Math.PI) a -= 2*Math.PI;
+    while(a < -Math.PI) a += 2*Math.PI;
+    return a;
+  }
 
-  for (let ray = 0; ray < NUM_RAYS; ray++) {
-    const angle = startAngle + ray * DELTA_ANGLE;
-    const sinA = Math.sin(angle);
-    const cosA = Math.cos(angle);
-
-    for (let depth = 1; depth < MAX_DEPTH; depth++) {
-      const tx = playerX + depth * cosA;
-      const ty = playerY + depth * sinA;
-      const ix = Math.floor(tx / TILE_SIZE);
-      const iy = Math.floor(ty / TILE_SIZE);
-
-      if (ix >= 0 && ix < MAP_W && iy >= 0 && iy < MAP_H && MAP[iy][ix]) {
-        const correctedDepth = depth * Math.cos(playerAngle - angle);
-        const h = PROJ_COEFF / (correctedDepth + 0.0001);
-        const c = 255 / (1 + correctedDepth * correctedDepth * 0.0001);
-        ctx.fillStyle = `rgb(${c},${c},${c})`;
-        ctx.fillRect(ray * SCALE, HEIGHT/2 - h/2, SCALE, h);
-        break;
-      }
+  function clearLineOfSight(x1,y1,x2,y2){
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.hypot(dx,dy);
+    const steps = Math.max(1, Math.floor(distance / 5));
+    const stepX = dx / steps, stepY = dy / steps;
+    for(let i=0;i<steps;i++){
+      const cx = x1 + i*stepX, cy = y1 + i*stepY;
+      if(isWall(cx,cy)) return false;
     }
-  }
-}
-
-function movePlayer(dt) {
-  const speed = 150 * dt;
-  const dx = Math.cos(playerAngle) * speed;
-  const dy = Math.sin(playerAngle) * speed;
-
-  // Forward/back
-  if (keys['w']) {
-    const newX = playerX + dx;
-    const newY = playerY + dy;
-    if (!isWall(newX, playerY)) playerX = newX;
-    if (!isWall(playerX, newY)) playerY = newY;
-  }
-  if (keys['s']) {
-    const newX = playerX - dx;
-    const newY = playerY - dy;
-    if (!isWall(newX, playerY)) playerX = newX;
-    if (!isWall(playerX, newY)) playerY = newY;
+    return true;
   }
 
-  // Strafe
-  const strafeDx = Math.sin(playerAngle) * speed;
-  const strafeDy = -Math.cos(playerAngle) * speed;
-  if (keys['d']) {
-    const newX = playerX - strafeDx;
-    const newY = playerY - strafeDy;
-    if (!isWall(newX, playerY)) playerX = newX;
-    if (!isWall(playerX, newY)) playerY = newY;
-  }
-  if (keys['a']) {
-    const newX = playerX + strafeDx;
-    const newY = playerY + strafeDy;
-    if (!isWall(newX, playerY)) playerX = newX;
-    if (!isWall(playerX, newY)) playerY = newY;
-  }
-}
-
-function drawMinimap() {
-  const scale = 0.2;
-  const mmW = MAP_W * TILE_SIZE * scale;
-  const mmH = MAP_H * TILE_SIZE * scale;
-
-  ctx.save();
-  ctx.translate(10, 10);
-  ctx.scale(scale, scale);
-
-  // Map
-  for (let y = 0; y < MAP_H; y++) {
-    for (let x = 0; x < MAP_W; x++) {
-      if (MAP[y][x] === 1) {
-        ctx.fillStyle = "#666";
-        ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+  // Rendering
+  function castRays(){
+    const start = playerAngle - FOV/2;
+    for(let ray=0; ray<NUM_RAYS; ray++){
+      const angle = start + ray*DELTA_ANGLE;
+      const sinA = Math.sin(angle), cosA = Math.cos(angle);
+      for(let depth=1; depth<MAX_DEPTH; depth++){
+        const tx = playerX + depth * cosA;
+        const ty = playerY + depth * sinA;
+        const ix = Math.floor(tx / TILE_SIZE), iy = Math.floor(ty / TILE_SIZE);
+        if(ix >=0 && iy >=0 && ix < MAP_W && iy < MAP_H && MAP[iy][ix]){
+          const corrected = depth * Math.cos(playerAngle - angle);
+          const h = PROJ_COEFF / (corrected + 0.0001);
+          const c = Math.max(0, Math.min(255, 255 / (1 + corrected*corrected*0.0001)));
+          ctx.fillStyle = `rgb(${c|0},${c|0},${c|0})`;
+          ctx.fillRect(ray * SCALE, HEIGHT/2 - h/2, SCALE+1, h);
+          break;
+        }
       }
     }
   }
 
-  // Player
-  ctx.fillStyle = "red";
-  ctx.beginPath();
-  ctx.arc(playerX, playerY, 5, 0, Math.PI * 2);
-  ctx.fill();
+  // Movement
+  function movePlayer(dt){
+    const speed = 150 * dt;
+    const dx = Math.cos(playerAngle) * speed;
+    const dy = Math.sin(playerAngle) * speed;
 
-  // Facing line
-  const dx = Math.cos(playerAngle) * 40;
-  const dy = Math.sin(playerAngle) * 40;
-  ctx.strokeStyle = "red";
-  ctx.beginPath();
-  ctx.moveTo(playerX, playerY);
-  ctx.lineTo(playerX + dx, playerY + dy);
-  ctx.stroke();
+    // Forward/back
+    if(keys['w']){
+      const nx = playerX + dx, ny = playerY + dy;
+      if(!isWall(nx, playerY)) playerX = nx;
+      if(!isWall(playerX, ny)) playerY = ny;
+    }
+    if(keys['s']){
+      const nx = playerX - dx, ny = playerY - dy;
+      if(!isWall(nx, playerY)) playerX = nx;
+      if(!isWall(playerX, ny)) playerY = ny;
+    }
 
-  ctx.restore();
-}
+    // Strafe
+    const strafe_dx = Math.sin(playerAngle) * speed;
+    const strafe_dy = -Math.cos(playerAngle) * speed;
+    if(keys['d']){
+      const nx = playerX - strafe_dx, ny = playerY - strafe_dy;
+      if(!isWall(nx, playerY)) playerX = nx;
+      if(!isWall(playerX, ny)) playerY = ny;
+    }
+    if(keys['a']){
+      const nx = playerX + strafe_dx, ny = playerY + strafe_dy;
+      if(!isWall(nx, playerY)) playerX = nx;
+      if(!isWall(playerX, ny)) playerY = ny;
+    }
+  }
 
-function drawCrosshair() {
-  const centerX = WIDTH / 2;
-  const centerY = HEIGHT / 2;
-  const size = 6;
-  ctx.strokeStyle = "white";
-  ctx.beginPath();
-  ctx.moveTo(centerX - size, centerY);
-  ctx.lineTo(centerX + size, centerY);
-  ctx.moveTo(centerX, centerY - size);
-  ctx.lineTo(centerX, centerY + size);
-  ctx.stroke();
-}
+  // Weird A* stuff
+  function posToGrid(x,y){ return [Math.floor(x / TILE_SIZE), Math.floor(y / TILE_SIZE)]; }
+  function gridToPos(cx,cy){ return [ (cx + 0.5)*TILE_SIZE, (cy + 0.5)*TILE_SIZE ]; }
 
-let lastTime = performance.now();
+  function astar(start, goal, grid){
+    // start/goal are [x,y] grid coords
+    // A* using array-based open list I SHOULD REALLY USE A BINARY HEAP LATER
+    function heuristic(a,b){ return Math.abs(a[0]-b[0]) + Math.abs(a[1]-b[1]); }
+    const startKey = start[0]+','+start[1];
+    const goalKey = goal[0]+','+goal[1];
+    const open = [{prio:heuristic(start,goal), cost:0, node:start, parent:null}];
+    const cameFrom = {};
+    const costSoFar = {}; costSoFar[startKey] = 0;
 
-function gameLoop(now) {
-  const dt = (now - lastTime) / 1000;
-  lastTime = now;
+    while(open.length){
+      open.sort((a,b)=>a.prio - b.prio);
+      const current = open.shift();
+      const curKey = current.node[0]+','+current.node[1];
 
-  movePlayer(dt);
+      if(current.node[0] === goal[0] && current.node[1] === goal[1]){
+        // reconstruct
+        const path = [];
+        let iter = current;
+        while(iter){
+          path.push(iter.node);
+          iter = iter.parent;
+        }
+        return path.reverse();
+      }
 
-  ctx.fillStyle = "black";
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      cameFrom[curKey] = current.parent ? current.parent.node : null;
+      const neighbors = [[1,0],[-1,0],[0,1],[0,-1]];
+      for(const n of neighbors){
+        const nx = current.node[0]+n[0], ny = current.node[1]+n[1];
+        if(nx<0 || ny<0 || nx>=MAP_W || ny>=MAP_H) continue;
+        if(grid[ny][nx] !== 0) continue;
+        const nKey = nx+','+ny;
+        const newCost = current.cost + 1;
+        if(costSoFar[nKey] === undefined || newCost < costSoFar[nKey]){
+          costSoFar[nKey] = newCost;
+          const priority = newCost + heuristic([nx,ny], goal);
+          open.push({prio:priority, cost:newCost, node:[nx,ny], parent:current});
+        }
+      }
+    }
+    return [];
+  }
 
-  castRays();
-  drawMinimap();
-  if (showCrosshair) drawCrosshair();
+  function followPath(enemy, dt, speed){
+    if(!enemy.path || enemy.path.length===0) return;
+    const nextCell = enemy.path[0];
+    const [tx, ty] = gridToPos(nextCell[0], nextCell[1]);
+    let dx = tx - enemy.x, dy = ty - enemy.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist < 5){
+      enemy.path.shift();
+    } else {
+      dx /= dist; dy /= dist;
+      const newX = enemy.x + dx * speed * dt;
+      const newY = enemy.y + dy * speed * dt;
+      if(!isWall(newX, enemy.y)) enemy.x = newX;
+      if(!isWall(enemy.x, newY)) enemy.y = newY;
+    }
+  }
 
-  requestAnimationFrame(gameLoop);
-}
+  // Enemy updates/projectiles
+  function updateEnemies(dt){
+    // enemies behavior & shooting
+    for(let eIdx=0; eIdx<enemy_list.length; eIdx++){
+      const enemy = enemy_list[eIdx];
+      if(!enemy.alive) continue;
+      const [egx, egy] = posToGrid(enemy.x, enemy.y);
+      const [pgx, pgy] = posToGrid(playerX, playerY);
 
-requestAnimationFrame(gameLoop);
+      if(clearLineOfSight(enemy.x, enemy.y, playerX, playerY)){
+        enemy.state = 'chasing';
+      } else if(enemy.state === 'chasing'){
+        enemy.state = 'patrolling';
+        enemy.path = [];
+      }
+
+      const speed = 50;
+      if(enemy.state === 'chasing'){
+        const path = astar([egx,egy], [pgx,pgy], MAP);
+        enemy.path = path.length ? path.slice(1) : [];
+        followPath(enemy, dt, speed);
+      } else { // patrolling
+        const patrol = enemy.patrol_points;
+        const i = enemy.patrol_index;
+        const targetPos = patrol[i];
+        const tgtGrid = posToGrid(targetPos[0], targetPos[1]);
+
+        if(!enemy.path || enemy.path.length===0){
+          const path = astar([egx,egy], tgtGrid, MAP);
+          enemy.path = path.length ? path.slice(1) : [];
+        }
+        followPath(enemy, dt, speed);
+        const dToPatrol = Math.hypot(enemy.x - targetPos[0], enemy.y - targetPos[1]);
+        if(dToPatrol < 10){
+          enemy.patrol_index = (i+1) % patrol.length;
+          enemy.path = [];
+        }
+      }
+
+      // Shooting (chasing)
+      enemy.cooldown -= dt;
+      if(enemy.cooldown <= 0 && enemy.state === 'chasing'){
+        const dx = playerX - enemy.x;
+        const dy = playerY - enemy.y;
+        const dist = Math.hypot(dx,dy);
+        if(dist !== 0){
+          projectiles.push({ x: enemy.x, y: enemy.y, dx: (dx/dist) * 200, dy: (dy/dist) * 200 });
+          enemy.cooldown = 2.0;
+        }
+      }
+    }
+
+    // move enemy projectiles and handle collisions with player/walls
+    for(let i=projectiles.length-1; i>=0; i--){
+      const p = projectiles[i];
+      p.x += p.dx * dt;
+      p.y += p.dy * dt;
+      if(isWall(p.x, p.y)){
+        projectiles.splice(i,1); continue;
+      }
+      if(Math.hypot(p.x - playerX, p.y - playerY) < 15){
+        projectiles.splice(i,1);
+        playerHP -= 10;
+        console.log(`Player HP: ${playerHP}`);
+        if(playerHP <= 0){
+          console.log("You died!");
+          // stop game loop (we'll freeze movement/render by setting a flag)
+          running = false;
+        }
+      }
+    }
+  }
+
+  // Draw enemy billboards
+  function drawEnemies3D(){
+    for(let idx=0; idx<enemy_list.length; idx++){
+      const enemy = enemy_list[idx];
+      if(!enemy.alive) continue;
+      const dx = enemy.x - playerX;
+      const dy = enemy.y - playerY;
+      let angleToEnemy = Math.atan2(dy, dx) - playerAngle;
+      angleToEnemy = wrapAngle(angleToEnemy);
+      if(angleToEnemy > -FOV/2 && angleToEnemy < FOV/2){
+        let dist = Math.hypot(dx,dy);
+        dist *= Math.cos(angleToEnemy); // fish-eye correction
+        if(dist === 0) continue;
+        // check raycast for blocking walls
+        const steps = Math.max(1, Math.floor(dist));
+        let blocked = false;
+        for(let i=0;i<steps;i+=4){
+          const checkX = playerX + (dx) * (i/dist);
+          const checkY = playerY + (dy) * (i/dist);
+          if(isWall(checkX, checkY)){ blocked = true; break; }
+        }
+        if(blocked) continue;
+        const size = Math.min(5000 / dist, HEIGHT);
+        const x = WIDTH/2 + Math.tan(angleToEnemy) * DIST - size/2;
+        const y = HEIGHT/2 - size/2;
+        ctx.fillStyle = 'rgb(255,0,0)';
+        ctx.fillRect(x, y, size, size);
+      }
+    }
+  }
+
+  function drawProjectiles3D(){
+    // enemy projectiles (yellow)
+    for(const p of projectiles){
+      if(!clearLineOfSight(playerX, playerY, p.x, p.y)) continue;
+      const dx = p.x - playerX, dy = p.y - playerY;
+      let angle = Math.atan2(dy, dx) - playerAngle;
+      angle = wrapAngle(angle);
+      if(angle > -FOV/2 && angle < FOV/2){
+        let dist = Math.hypot(dx,dy);
+        dist *= Math.cos(angle);
+        if(dist === 0) continue;
+        const size = Math.min(2000 / dist, HEIGHT);
+        const x = WIDTH/2 + Math.tan(angle) * DIST - size/2;
+        const y = HEIGHT/2 - size/2;
+        ctx.fillStyle = 'rgb(255,255,0)';
+        ctx.fillRect(x,y,size,size);
+      }
+    }
+  }
+
+  function drawPlayerProjectiles3D(){
+    for(const p of player_projectiles){
+      if(!clearLineOfSight(playerX, playerY, p.x, p.y)) continue;
+      const dx = p.x - playerX, dy = p.y - playerY;
+      let angle = Math.atan2(dy, dx) - playerAngle;
+      angle = wrapAngle(angle);
+      if(angle > -FOV/2 && angle < FOV/2){
+        let dist = Math.hypot(dx,dy);
+        dist *= Math.cos(angle);
+        if(dist === 0) continue;
+        const size = Math.min(1500 / dist, HEIGHT);
+        const x = WIDTH/2 + Math.tan(angle) * DIST - size/2;
+        const y = HEIGHT/2 - size/2;
+        ctx.fillStyle = 'rgb(0,255,0)';
+        ctx.fillRect(x,y,size,size);
+      }
+    }
+  }
+
+  // Minimap stuff
+  function drawMinimap(fullscreen=false){
+    if(fullscreen){
+      // viewport world dimensions centered on player
+      const viewportWidth = WIDTH, viewportHeight = HEIGHT;
+      const tilesVisibleX = 15;
+      const tileSize = TILE_SIZE;
+      const viewportWorldW = tilesVisibleX * tileSize;
+      const viewportWorldH = viewportWorldW * (viewportHeight / viewportWidth);
+      let vx = playerX - viewportWorldW/2;
+      let vy = playerY - viewportWorldH/2;
+      const maxVx = MAP_W * tileSize - viewportWorldW;
+      const maxVy = MAP_H * tileSize - viewportWorldH;
+      vx = Math.max(0, Math.min(vx, maxVx));
+      vy = Math.max(0, Math.min(vy, maxVy));
+      const scaleX = viewportWidth / viewportWorldW;
+      const scaleY = viewportHeight / viewportWorldH;
+      // draw background
+      ctx.fillStyle = 'rgb(30,30,30)'; ctx.fillRect(0,0,viewportWidth,viewportHeight);
+      // walls
+      ctx.fillStyle = 'rgb(100,100,100)';
+      for(let y=0;y<MAP_H;y++){
+        for(let x=0;x<MAP_W;x++){
+          if(MAP[y][x]===1){
+            const wx = x * tileSize, wy = y * tileSize;
+            if(vx <= wx + tileSize && wx <= vx + viewportWorldW && vy <= wy + tileSize && wy <= vy + viewportWorldH){
+              const rx = Math.floor((wx - vx) * scaleX);
+              const ry = Math.floor((wy - vy) * scaleY);
+              const rw = Math.ceil(tileSize * scaleX);
+              const rh = Math.ceil(tileSize * scaleY);
+              ctx.fillRect(rx, ry, rw, rh);
+            }
+          }
+        }
+      }
+      // player
+      const px = Math.floor((playerX - vx) * scaleX);
+      const py = Math.floor((playerY - vy) * scaleY);
+      ctx.fillStyle = 'rgb(0,165,255)';
+      const pr = Math.max(10, Math.ceil(10 * scaleX));
+      ctx.beginPath(); ctx.arc(px,py,pr,0,Math.PI*2); ctx.fill();
+      // player direction
+      ctx.strokeStyle = 'rgb(0,255,0)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(px,py);
+      ctx.lineTo(px + Math.cos(playerAngle) * 40 * scaleX, py + Math.sin(playerAngle) * 40 * scaleX);
+      ctx.stroke();
+      // enemies
+      for(const e of enemy_list){
+        if(!e.alive) continue;
+        const ex = e.x, ey = e.y;
+        if(vx <= ex && ex <= vx + viewportWorldW && vy <= ey && ey <= vy + viewportWorldH){
+          const exm = Math.floor((ex - vx) * scaleX);
+          const eym = Math.floor((ey - vy) * scaleY);
+          ctx.fillStyle = 'rgb(255,0,0)';
+          ctx.beginPath(); ctx.arc(exm,eym, Math.max(5,Math.ceil(6 * scaleX)), 0, Math.PI*2); ctx.fill();
+        }
+      }
+      // projectiles
+      for(const p of projectiles.concat(player_projectiles)){
+        if(vx <= p.x && p.x <= vx + viewportWorldW && vy <= p.y && p.y <= vy + viewportWorldH){
+          const pxp = Math.floor((p.x - vx) * scaleX);
+          const pyp = Math.floor((p.y - vy) * scaleY);
+          ctx.fillStyle = 'rgb(255,255,0)'; ctx.beginPath(); ctx.arc(pxp,pyp,3,0,Math.PI*2); ctx.fill();
+        }
+      }
+    } else {
+      // small scrolling minimap top-left
+      const minimapDisplayW = Math.floor(WIDTH / 4);
+      const minimapDisplayH = Math.floor(minimapDisplayW * (HEIGHT / WIDTH));
+      const tilesVisibleX = 10;
+      const tileSize = TILE_SIZE;
+      const viewportWorldW = tilesVisibleX * tileSize;
+      const viewportWorldH = viewportWorldW * (minimapDisplayH / minimapDisplayW);
+      let vx = playerX - viewportWorldW/2;
+      let vy = playerY - viewportWorldH/2;
+      const maxVx = MAP_W * tileSize - viewportWorldW;
+      const maxVy = MAP_H * tileSize - viewportWorldH;
+      vx = Math.max(0, Math.min(vx, maxVx));
+      vy = Math.max(0, Math.min(vy, maxVy));
+      const sx = minimapDisplayW / viewportWorldW;
+      const sy = minimapDisplayH / viewportWorldH;
+
+      // background rect
+      ctx.fillStyle = 'rgba(30,30,30,0.95)';
+      ctx.fillRect(10,10,minimapDisplayW,minimapDisplayH);
+
+      // walls
+      ctx.fillStyle = 'rgb(100,100,100)';
+      for(let y=0;y<MAP_H;y++){
+        for(let x=0;x<MAP_W;x++){
+          if(MAP[y][x]===1){
+            const wx = x * tileSize, wy = y * tileSize;
+            if(vx <= wx + tileSize && wx <= vx + viewportWorldW && vy <= wy + tileSize && wy <= vy + viewportWorldH){
+              const rx = Math.floor(10 + (wx - vx) * sx);
+              const ry = Math.floor(10 + (wy - vy) * sy);
+              const rw = Math.ceil(tileSize * sx);
+              const rh = Math.ceil(tileSize * sy);
+              ctx.fillRect(rx, ry, rw, rh);
+            }
+          }
+        }
+      }
+
+      // player
+      const px = Math.floor(10 + (playerX - vx) * sx);
+      const py = Math.floor(10 + (playerY - vy) * sy);
+      ctx.fillStyle = 'rgb(0,165,255)';
+      ctx.beginPath(); ctx.arc(px,py, Math.max(5, Math.ceil(10 * sx)), 0, Math.PI*2); ctx.fill();
+      // direction
+      ctx.strokeStyle = 'rgb(0,255,0)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(px,py);
+      ctx.lineTo(px + Math.cos(playerAngle) * 20 * sx, py + Math.sin(playerAngle) * 20 * sx);
+      ctx.stroke();
+
+      // enemies
+      for(const e of enemy_list){
+        if(!e.alive) continue;
+        const ex = e.x, ey = e.y;
+        if(vx <= ex && ex <= vx + viewportWorldW && vy <= ey && ey <= vy + viewportWorldH){
+          const exm = Math.floor(10 + (ex - vx) * sx);
+          const eym = Math.floor(10 + (ey - vy) * sy);
+          ctx.fillStyle = 'rgb(255,0,0)'; ctx.beginPath(); ctx.arc(exm,eym, Math.max(3, Math.ceil(6 * sx)), 0, Math.PI*2); ctx.fill();
+        }
+      }
+
+      // projectiles
+      for(const p of projectiles){
+        if(vx <= p.x && p.x <= vx + viewportWorldW && vy <= p.y && p.y <= vy + viewportWorldH){
+          const pxp = Math.floor(10 + (p.x - vx) * sx);
+          const pyp = Math.floor(10 + (p.y - vy) * sy);
+          ctx.fillStyle = 'rgb(255,255,0)'; ctx.beginPath(); ctx.arc(pxp,pyp,2,0,Math.PI*2); ctx.fill();
+        }
+      }
+      for(const p of player_projectiles){
+        if(vx <= p.x && p.x <= vx + viewportWorldW && vy <= p.y && p.y <= vy + viewportWorldH){
+          const pxp = Math.floor(10 + (p.x - vx) * sx);
+          const pyp = Math.floor(10 + (p.y - vy) * sy);
+          ctx.fillStyle = 'rgb(0,255,0)'; ctx.beginPath(); ctx.arc(pxp,pyp,2,0,Math.PI*2); ctx.fill();
+        }
+      }
+    }
+  }
+
+  // Crosshair
+  function drawCrosshair(){
+    const cx = WIDTH/2|0, cy = HEIGHT/2|0;
+    const size = 6;
+    ctx.strokeStyle = 'rgb(255,255,255)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy);
+    ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size);
+    ctx.stroke();
+  }
+
+  // Health bar
+  function drawHealthBar(){
+    const barW = 200, barH = 20;
+    const bx = 20, by = HEIGHT - barH - 20;
+    ctx.fillStyle = 'rgb(100,0,0)'; ctx.fillRect(bx,by,barW,barH);
+    const ratio = Math.max(0, Math.min(1, playerHP / 100));
+    ctx.fillStyle = 'rgb(0,200,0)'; ctx.fillRect(bx,by, barW * ratio, barH);
+    ctx.strokeStyle = 'rgb(255,255,255)'; ctx.lineWidth = 2; ctx.strokeRect(bx,by,barW,barH);
+  }
+
+  // Player shooting
+  function updatePlayerShooting(dt){
+    if(player_shooting){
+      player_shoot_cooldown -= dt;
+      if(player_shoot_cooldown <= 0){
+        const dx = Math.cos(playerAngle), dy = Math.sin(playerAngle);
+        player_projectiles.push({ x: playerX, y: playerY, dx: dx * 400, dy: dy * 400 });
+        player_shoot_cooldown = player_fire_rate;
+      }
+    } else {
+      player_shoot_cooldown = 0;
+    }
+
+    // move player projectiles and check collisions
+    for(let i=player_projectiles.length-1;i>=0;i--){
+      const p = player_projectiles[i];
+      p.x += p.dx * dt; p.y += p.dy * dt;
+      if(isWall(p.x, p.y)){
+        player_projectiles.splice(i,1); continue;
+      }
+      for(let j=0;j<enemy_list.length;j++){
+        const enemy = enemy_list[j];
+        if(!enemy.alive) continue;
+        const dist = Math.hypot(p.x - enemy.x, p.y - enemy.y);
+        if(dist < 20){
+          player_projectiles.splice(i,1);
+          enemy_hits[j] = (enemy_hits[j]||0) + 1;
+          if(enemy_hits[j] >= 5){
+            enemy.alive = false;
+            console.log(`Enemy ${j} killed`);
+            delete enemy_hits[j];
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Main loop
+  let lastTime = performance.now();
+  let running = true;
+
+  function frame(now){
+    if(!running) return; // freeze if player dead
+    const dt = Math.min(0.05, (now - lastTime) / 1000); // clamp dt
+    lastTime = now;
+
+    // Input-driven updates
+    movePlayer(dt);
+    updateEnemies(dt);
+    updatePlayerShooting(dt);
+
+    // Clear screen
+    ctx.fillStyle = 'black'; ctx.fillRect(0,0,WIDTH,HEIGHT);
+
+    // 3D rendering
+    castRays();
+    drawEnemies3D();
+    drawProjectiles3D();
+    drawPlayerProjectiles3D();
+
+    // minimap
+    if(minimap_fullscreen) drawMinimap(true);
+    else drawMinimap(false);
+
+    // HUD
+    drawHealthBar();
+    if(show_crosshair) drawCrosshair();
+
+    requestAnimationFrame(frame);
+  }
+
+  // Start animation
+  requestAnimationFrame(frame);
+
+  // Input handling 
+  window.addEventListener('keydown', (e)=>{
+    keys[e.key.toLowerCase()] = true;
+    if(e.key === 'Escape'){
+      if(mouseLocked){
+        document.exitPointerLock();
+      } else {
+        canvas.requestPointerLock();
+      }
+    } else if(e.key.toLowerCase() === 'v'){
+      minimap_fullscreen = !minimap_fullscreen;
+    }
+  });
+  window.addEventListener('keyup', (e)=>{
+    keys[e.key.toLowerCase()] = false;
+  });
+
+  // Pointer lock & mouse move
+  canvas.addEventListener('click', ()=> {
+    canvas.requestPointerLock();
+  });
+
+  document.addEventListener('pointerlockchange', ()=> {
+    mouseLocked = (document.pointerLockElement === canvas);
+    // hide/show cursor handled by pointer lock automatically
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if(mouseLocked){
+      const mx = e.movementX || e.mozMovementX || e.webkitMovementX || 0;
+      playerAngle += mx * 0.003; // sensitivity
+      playerAngle = wrapAngle(playerAngle);
+    }
+  });
+
+  // Mouse buttons: right to aim (hold), left to shoot when right held
+  canvas.addEventListener('mousedown', (e) => {
+    if(e.button === 2){ // right
+      right_mouse_held = true; show_crosshair = true;
+    } else if(e.button === 0){ // left
+      left_mouse_held = true;
+      if(right_mouse_held) player_shooting = true;
+    }
+  });
+  canvas.addEventListener('mouseup', (e) => {
+    if(e.button === 2){
+      right_mouse_held = false; show_crosshair = false; player_shooting = false;
+    } else if(e.button === 0){
+      left_mouse_held = false; player_shooting = false;
+    }
+  });
+
+  // prevent context menu on right click
+  canvas.addEventListener('contextmenu', (e)=> e.preventDefault());
+
+  // Resize handling
+  window.addEventListener('resize', ()=> {
+    // we keep the canvas size fixed at WIDTHxHEIGHT to match Python layout
+  });
+
+  // Debug: log some initial state
+  console.log('Game started. Click canvas to lock mouse. Press V for minimap fullscreen. Esc to toggle pointer lock.');
+
+})();
 </script>
 </body>
 </html>
